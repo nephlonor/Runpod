@@ -106,19 +106,22 @@ restrictions that block Claude's cloud sessions. The pod template launches Comfy
 `--enable-cors-header *`, so cross-origin calls are allowed.
 
 - **Workflow selector** — Text → Video, Image → Video, Reference → Video (up to 9 images)
-- **Pod control** — start/stop, live uptime, running cost, all via RunPod's REST API
 - **Live progress** — step-by-step over ComfyUI's websocket
 - **Output** — inline player plus download, with seed and timing metadata
 
-### API key
+### What the page deliberately cannot do
 
-Start/stop needs a RunPod API key, entered in the "Connection & pod control" drawer and
-kept in your browser's `localStorage`. Everything else (rendering) works without one.
-Anyone with access to that browser profile can read the key — use the **Forget** button
-on a shared machine, and never commit it.
+**Start/stop the pod, or show uptime, cost, or balance.** All of those need an
+authenticated call to RunPod's API, and that is impossible from a browser: RunPod
+answers the CORS preflight with a non-2xx status (301 on `/v2`, 400 on `/v1`), so any
+request carrying an `Authorization` header is blocked before it is sent. Verified
+empirically — the same URL returns 401 without the header and throws with it.
 
-### Account balance
+Rendering is unaffected, because ComfyUI on the pod sends proper CORS headers and needs
+no authentication.
 
-The page shows *spend* (rate × uptime), not credits remaining. Remaining balance is only
-exposed on RunPod's GraphQL API, which does not send CORS headers, so a static page
-cannot read it. Check [the billing page](https://console.runpod.io/user/billing) for that.
+For pod control use the [RunPod console](https://console.runpod.io/pods), or ask Claude
+(the RunPod MCP connector calls the API server-side, where CORS does not apply).
+
+Making this work in-page would need a small proxy holding the API key — a Cloudflare
+Worker or similar — which is a deliberate piece of infrastructure, not a page tweak.

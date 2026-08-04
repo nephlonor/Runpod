@@ -132,13 +132,10 @@
     <div class="chip">
       <span class="dot off" id="dot"></span>
       <span id="podstate">not connected</span>
-      <span class="sep" id="s1" hidden>·</span>
-      <b id="uptime" hidden></b>
-      <span class="sep" id="s2" hidden>·</span>
-      <b id="spend" hidden></b>
     </div>
 
-    <button class="ghost" id="power" disabled>Start pod</button>
+    <a class="ghost" id="console" href="https://console.runpod.io/pods" target="_blank"
+       rel="noopener" style="text-decoration:none" title="Start or stop the pod in the RunPod console">Console ↗</a>
   </div>
 
   <details class="drawer" id="drawer">
@@ -148,13 +145,15 @@
         <span>Pod ID</span>
         <input type="text" id="podid" placeholder="rqdp90nd5ke7yz" spellcheck="false">
       </div>
-      <div class="field" style="flex:1 1 240px">
-        <span>RunPod API key <span class="hint">— optional, only for start/stop</span></span>
-        <input type="password" id="apikey" placeholder="rpa_…" spellcheck="false" autocomplete="off">
-      </div>
       <button class="ghost" id="connect">Connect</button>
-      <button class="ghost danger" id="forget" title="Clear the stored pod id and API key">Forget</button>
+      <button class="ghost danger" id="forget" title="Clear the stored pod id">Forget</button>
       <div class="hint" id="connmsg" style="flex:1 1 100%"></div>
+      <p class="hint" style="flex:1 1 100%; margin:2px 0 0">
+        Starting and stopping the pod can't be done from this page: RunPod's API answers
+        CORS preflight with a non-2xx status, so the browser blocks any authenticated
+        call. Use the <a href="https://console.runpod.io/pods" target="_blank"
+        rel="noopener">RunPod console</a> — or ask Claude, which reaches the API directly.
+      </p>
     </div>
   </details>
 </header>
@@ -237,14 +236,15 @@
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const REST = "https://rest.runpod.io/v2";
+
+// Pod start/stop deliberately absent: RunPod's REST API answers CORS preflight with a
+// non-2xx status, so any request carrying an Authorization header is blocked by the
+// browser before it is sent. Verified — without the header the same URL returns 401,
+// with it the fetch throws. Use the console, or Claude via the RunPod MCP connector.
 
 const state = {
-  pod: null, key: null, wf: "t2v", images: [], busy: false,
+  pod: null, wf: "t2v", images: [], busy: false,
   ws: null, clientId: crypto.randomUUID(),
-  info: null,            // last /v2/pods/{id} payload
-  uptimeBase: 0,         // seconds, from the API
-  uptimeAt: 0,           // Date.now() when uptimeBase was read
 };
 
 const base = () => `https://${state.pod}-8188.proxy.runpod.net`;
@@ -262,90 +262,13 @@ const fmtDur = s => {
   return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
 };
 
-/* ================= pod control (RunPod REST) ================= */
-async function api(path, opts = {}) {
-  if (!state.key) throw new Error("no-key");
-  const r = await fetch(REST + path, {
-    ...opts,
-    headers: { Authorization: `Bearer ${state.key}`, "Content-Type": "application/json", ...(opts.headers || {}) },
-  });
-  if (r.status === 401) throw new Error("API key rejected (401).");
-  if (r.status === 409) throw new Error("That action isn't valid for the pod's current state.");
-  if (!r.ok) throw new Error(`RunPod API HTTP ${r.status}`);
-  return r.status === 204 ? null : r.json();
-}
-
-async function refreshPod() {
-  if (!state.key || !state.pod) return;
-  try {
-    const p = await api(`/pods/${state.pod}`);
-    state.info = p;
-    state.uptimeBase = p.runtime?.uptime ?? 0;
-    state.uptimeAt = Date.now();
-    paintPod();
-  } catch (e) {
-    if (e.message !== "no-key") note(e.message, "warn");
-  }
-}
-
-function paintPod() {
-  const p = state.info;
-  if (!p) return;
-  const running = p.status === "RUNNING";
-  $("podstate").textContent = p.status.toLowerCase();
-  $("power").disabled = false;
-  $("power").textContent = running ? "Stop pod" : "Start pod";
-  $("power").classList.toggle("danger", running);
-  $("s1").hidden = $("uptime").hidden = !running;
-  $("s2").hidden = $("spend").hidden = !running;
-  tickUptime();
-}
-
-function tickUptime() {
-  const p = state.info;
-  if (!p || p.status !== "RUNNING") return;
-  const secs = state.uptimeBase + (Date.now() - state.uptimeAt) / 1000;
-  $("uptime").textContent = fmtDur(secs);
-  if (p.cost) $("spend").textContent = "$" + (p.cost * secs / 3600).toFixed(2);
-}
-
-async function power() {
-  const running = state.info?.status === "RUNNING";
-  const action = running ? "stop" : "start";
-  if (running && !confirm("Stop the pod? Renders in progress will be lost. The network volume and its models are kept.")) return;
-  $("power").disabled = true;
-  $("power").textContent = running ? "Stopping…" : "Starting…";
-  try {
-    await api(`/pods/${state.pod}/action`, { method: "POST", body: JSON.stringify({ action }) });
-    note(running ? "Pod stopping — billing ends shortly." : "Pod starting. ComfyUI needs about a minute after it reaches RUNNING.", "warn");
-    setTimeout(refreshPod, 3000);
-    if (!running) pollUntilReady();
-  } catch (e) {
-    note(e.message, "err");
-    $("power").disabled = false;
-    paintPod();
-  }
-}
-
-/* poll ComfyUI after a start until it answers */
-async function pollUntilReady() {
-  for (let i = 0; i < 80; i++) {
-    await new Promise(r => setTimeout(r, 6000));
-    if (await connect(true)) return;
-  }
-}
-
 /* ================= ComfyUI connection ================= */
 async function connect(quiet) {
   const id = $("podid").value.trim().replace(/^https?:\/\//, "").split("-")[0];
   if (!id) return false;
   state.pod = id;
-  state.key = $("apikey").value.trim() || null;
   localStorage.setItem("h3pod", id);
-  if (state.key) localStorage.setItem("h3key", state.key);
-
-  refreshPod();
-  if (!quiet) setDot("busy", "Connecting…");
+  if (!quiet) { setDot("busy", "Connecting…"); $("podstate").textContent = "connecting…"; }
   try {
     const r = await fetch(`${base()}/system_stats`, { cache: "no-store" });
     if (!r.ok) throw new Error(`HTTP ${r.status}${r.status === 502 ? " — ComfyUI still starting" : ""}`);
@@ -354,7 +277,7 @@ async function connect(quiet) {
     // ComfyUI reports e.g. "cuda:0 NVIDIA RTX PRO 6000 ... : cudaMallocAsync"
     const gpu = d.name.replace(/^\w+:\d+\s*/, "").split(":")[0].trim();
     setDot("on", `${gpu} · ${(d.vram_free / 2 ** 30).toFixed(0)} GiB VRAM free · ComfyUI ${s.system.comfyui_version}`);
-    if (!state.info) $("podstate").textContent = "connected";
+    $("podstate").textContent = "connected";
     $("go").disabled = false; $("go").textContent = "Generate";
     openSocket();
     return true;
@@ -363,6 +286,9 @@ async function connect(quiet) {
       ? "ComfyUI unreachable — pod stopped, still booting, or network blocked"
       : e.message;
     setDot("off", why);
+    $("podstate").textContent = "pod unreachable";
+    if (!quiet) $("drawer").open = true;      // make the reason visible
+    note(why + ". If the pod is stopped, start it in the RunPod console, wait for RUNNING, then Connect.", "warn");
     $("go").disabled = true; $("go").textContent = "Connect to a pod first";
     return false;
   }
@@ -584,14 +510,12 @@ function paintThumbs() {
 
 $("connect").addEventListener("click", () => connect());
 $("podid").addEventListener("keydown", e => e.key === "Enter" && connect());
-$("apikey").addEventListener("keydown", e => e.key === "Enter" && connect());
-$("power").addEventListener("click", power);
 $("forget").addEventListener("click", () => {
   localStorage.removeItem("h3pod"); localStorage.removeItem("h3key");
-  $("podid").value = $("apikey").value = "";
-  state.key = state.pod = state.info = null;
+  $("podid").value = "";
+  state.pod = null;
   setDot("off", "Cleared.");
-  $("power").disabled = true; $("podstate").textContent = "not connected";
+  $("podstate").textContent = "not connected";
 });
 $("go").addEventListener("click", generate);
 $("cancel").addEventListener("click", async () => {
@@ -606,12 +530,9 @@ function updateFrameNote() {
   $("framenote").textContent = `${f} frames → ${(f / FPS).toFixed(2)}s actual (H3 rounds length to ≡ 5 mod 17).`;
 }
 
-setInterval(tickUptime, 1000);
-setInterval(refreshPod, 30000);
 
 updateFrameNote();
 $("podid").value = localStorage.getItem("h3pod") || "";
-$("apikey").value = localStorage.getItem("h3key") || "";
 if ($("podid").value) connect(); else $("drawer").open = true;
 </script>
 </body>
