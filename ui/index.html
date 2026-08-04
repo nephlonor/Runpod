@@ -317,7 +317,7 @@ const $ = id => document.getElementById(id);
 
 const state = {
   pod: null, wf: "t2v", images: [], refs: { image: [], video: [], audio: [] },
-  jobs: [], history: [], ticker: null,
+  jobs: [], history: [], ticker: null, resuming: false,
   ws: null, clientId: crypto.randomUUID(),
 };
 const HISTORY_MAX = 100;
@@ -353,6 +353,7 @@ async function connect(quiet) {
     const gpu = d.name.replace(/^\w+:\d+\s*/, "").split(":")[0].trim();
     setDot("on", `${gpu} · ${(d.vram_free / 2 ** 30).toFixed(0)} GiB VRAM free · ComfyUI ${s.system.comfyui_version}`);
     $("podstate").textContent = "connected";
+    loadJobs(); paintJobs(); resumeJobs();
     refreshHistory();
     $("go").disabled = false; $("go").textContent = "Generate";
     openSocket();
@@ -534,6 +535,75 @@ function describeErrors(res) {
 
 const activeJobs = () => state.jobs.filter(j => ["uploading", "queued", "running"].includes(j.status));
 
+/* ---------- persistence: the page can be closed mid-render ---------- */
+// Only job metadata is stored. The clips themselves stay on the pod and are recovered
+// through ComfyUI's /history, so nothing large goes in localStorage.
+const JOBS_KEY = () => `h3jobs:${state.pod}`;
+const JOB_TTL_MS = 24 * 3600 * 1000;
+
+function saveJobs() {
+  if (!state.pod) return;
+  try {
+    const keep = state.jobs
+      .filter(j => Date.now() - (j.t0 || 0) < JOB_TTL_MS)
+      .slice(0, 50)
+      .map(({ id, wf, prompt, seed, length, width, height, steps, status, t0, secs, file, error }) =>
+        ({ id, wf, prompt, seed, length, width, height, steps, status, t0, secs, file, error }));
+    localStorage.setItem(JOBS_KEY(), JSON.stringify(keep));
+  } catch { /* quota or private mode: persistence is a nicety, not a requirement */ }
+}
+
+function loadJobs() {
+  if (!state.pod) return;
+  try {
+    const raw = JSON.parse(localStorage.getItem(JOBS_KEY()) || "[]");
+    state.jobs = raw.filter(j => Date.now() - (j.t0 || 0) < JOB_TTL_MS);
+  } catch { state.jobs = []; }
+}
+
+// Reconcile stored jobs against the pod after a reload, a tab switch, or a phone that
+// went to sleep. Anything that finished while we were away is picked up here.
+async function resumeJobs() {
+  if (!state.pod || state.resuming) return;
+  state.resuming = true;
+  try {
+    let recovered = 0;
+    for (const j of state.jobs) {
+      if (!["uploading", "queued", "running"].includes(j.status)) continue;
+      if (!j.id) {                       // died between upload and submit
+        j.status = "error"; j.error = "interrupted before it was submitted";
+        continue;
+      }
+      try {
+        const h = await (await fetch(`${base()}/history/${j.id}`, { cache: "no-store" })).json();
+        const e = h[j.id];
+        if (!e) continue;                // still queued or running; the ticker takes over
+        const st = e.status || {};
+        if (st.status_str === "error") { j.status = "error"; j.error = "ComfyUI reported an execution error."; continue; }
+        if (st.completed) {
+          j.file = findVideo(e);
+          j.status = j.file ? "done" : "error";
+          if (!j.file) j.error = "Finished but produced no video.";
+          else recovered++;
+        }
+      } catch { /* transient; try again on the next resume */ }
+    }
+    if (recovered) {
+      note(`Recovered ${recovered} render${recovered > 1 ? "s" : ""} finished while you were away.`, "warn");
+      const last = state.jobs.find(j => j.status === "done" && j.file);
+      if (last) showFromServer(last.file, last);
+      refreshHistory();
+    }
+    saveJobs(); paintJobs();
+    if (activeJobs().length) startTicking();
+  } finally { state.resuming = false; }
+}
+
+// A backgrounded tab throttles timers; recheck whenever it comes back into view.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") resumeJobs();
+});
+
 function startTicking() {
   if (state.ticker) return;
   state.ticker = setInterval(tick, 2500);
@@ -570,6 +640,7 @@ async function tick() {
 }
 
 function paintJobs() {
+  saveJobs();
   const box = $("jobs");
   const active = activeJobs();
   const recent = state.jobs.slice(0, 8);

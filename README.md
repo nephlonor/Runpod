@@ -131,6 +131,10 @@ soundtrack is passed as reference audio.
   separately with its own progress and cancel button
 - **Save to Photos** — on iOS, opens the share sheet so the clip can go straight to the
   camera roll; falls back to a plain download elsewhere
+- **Close the tab mid-render** — jobs are persisted per pod, and reopening the page
+  reconciles them against the pod: anything that finished while you were away is
+  recovered and loaded, anything still running resumes polling. Also re-checks whenever
+  the tab returns to the foreground, since backgrounded tabs have their timers throttled.
 - **History** — a collapsible grid of the last 100 outputs on the pod, read from
   ComfyUI's own `/history`, so it survives page reloads and includes runs made from
   ComfyUI's interface. Hover to preview, click to load into the player.
@@ -146,6 +150,15 @@ Requires HTTPS (the Pages URL qualifies; opening `index.html` from disk on a pho
 not) and a user gesture. Browsers without file sharing — desktop Chrome, Firefox — get a
 normal download instead, and the button says so. On iOS a plain download would land in
 Files, not Photos, which is why the share sheet is used.
+
+### Leaving mid-render
+
+Only job metadata goes to `localStorage` — the clips stay on the pod and are recovered
+through ComfyUI's `/history`, so nothing large is cached and nothing is lost if the
+browser clears storage. Entries expire after 24 hours.
+
+The render itself is entirely server-side, so closing the tab never cancels anything.
+The pod keeps working whether or not the page is open; the page just catches up.
 
 ### On "simultaneous" jobs
 
