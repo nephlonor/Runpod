@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniMax-H3 · RunPod</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #16181d; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #4f46e5; --accent-ink: #fff;
+    --ok: #10805a; --err: #b42318; --warn: #b54708;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --panel: #171a20; --ink: #e8eaed; --muted: #9aa1ad;
+      --line: #262b33; --accent: #6d64f5; --accent-ink: #fff;
+      --ok: #34d399; --err: #f87171; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  input, select, textarea, button { font: inherit; color: var(--ink); }
+
+  /* ---------- top bar ---------- */
+  header { position: sticky; top: 0; z-index: 10; background: var(--panel);
+           border-bottom: 1px solid var(--line); }
+  .bar { display: flex; gap: 12px; align-items: center; padding: 9px 14px; flex-wrap: wrap; }
+  .brand { font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+  .brand small { color: var(--muted); font-weight: 400; }
+  .tabs { display: flex; gap: 3px; background: var(--bg); padding: 3px; border-radius: 8px; }
+  .tab { padding: 6px 12px; border: 0; background: transparent; color: var(--muted);
+         border-radius: 6px; cursor: pointer; font-size: 14px; white-space: nowrap; }
+  .tab[aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+  .tab:disabled { opacity: .4; cursor: not-allowed; }
+
+  .spacer { margin-left: auto; }
+  .chip { display: flex; align-items: center; gap: 7px; padding: 5px 11px; background: var(--bg);
+          border: 1px solid var(--line); border-radius: 99px; font-size: 13px; white-space: nowrap; }
+  .chip b { font-weight: 600; }
+  .chip .sep { color: var(--line); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--err); }
+  .dot.busy { background: var(--warn); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  button.ghost { padding: 6px 12px; border: 1px solid var(--line); background: var(--panel);
+                 border-radius: 8px; cursor: pointer; font-size: 13.5px; }
+  button.ghost:disabled { opacity: .45; cursor: not-allowed; }
+  button.danger { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); color: var(--err); }
+
+  /* ---------- collapsible ---------- */
+  details.drawer { border-top: 1px solid var(--line); }
+  details.drawer > summary { list-style: none; cursor: pointer; padding: 8px 14px;
+                             font-size: 12.5px; color: var(--muted); user-select: none; }
+  details.drawer > summary::-webkit-details-marker { display: none; }
+  details.drawer > summary::before { content: "▸ "; }
+  details.drawer[open] > summary::before { content: "▾ "; }
+  .drawerbody { padding: 4px 14px 14px; display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field > span { font-size: 12px; color: var(--muted); }
+
+  /* ---------- layout ---------- */
+  main { display: grid; grid-template-columns: minmax(310px, 390px) 1fr; gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 880px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase;
+             letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+
+  label { display: block; font-size: 13px; font-weight: 550; margin: 14px 0 5px; }
+  .lbl0 { margin-top: 0; }
+  .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width: 100%; padding: 8px 10px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; }
+  textarea { resize: vertical; min-height: 118px; line-height: 1.45; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+
+  details.adv { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  details.adv > summary { list-style: none; cursor: pointer; font-size: 12.5px; color: var(--muted); }
+  details.adv > summary::-webkit-details-marker { display: none; }
+  details.adv > summary::before { content: "▸ "; }
+  details.adv[open] > summary::before { content: "▾ "; }
+
+  button.primary { width: 100%; margin-top: 16px; padding: 11px; border: 0; border-radius: 8px;
+                   background: var(--accent); color: var(--accent-ink); font-weight: 600; cursor: pointer; }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+
+  #drop { border: 1.5px dashed var(--line); border-radius: 8px; padding: 16px; text-align: center;
+          color: var(--muted); cursor: pointer; font-size: 13.5px; }
+  #drop.hot { border-color: var(--accent); color: var(--ink); }
+  #thumbs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  #thumbs figure { margin: 0; position: relative; }
+  #thumbs img { height: 62px; width: 62px; object-fit: cover; border-radius: 6px; display: block; }
+  #thumbs button { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
+                   border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
+                   color: var(--muted); font-size: 11px; line-height: 1; cursor: pointer; }
+  #thumbs figure:only-child img { height: auto; width: auto; max-width: 100%; max-height: 180px; margin: 0 auto; }
+
+  #stage { min-height: 330px; display: grid; place-items: center; text-align: center; color: var(--muted); }
+  video { width: 100%; border-radius: 8px; background: #000; display: block; }
+  .bar2 { height: 6px; background: var(--bg); border-radius: 99px; overflow: hidden; margin: 12px 0 4px; }
+  .bar2 > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  .meta { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  .meta code { font-family: ui-monospace, Menlo, monospace; color: var(--ink); }
+  .msg { padding: 10px 12px; border-radius: 8px; font-size: 13.5px; margin-top: 12px; display: none; }
+  .msg.err { display: block; background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
+  .msg.warn { display: block; background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+  #gallery { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  #gallery a { font-size: 12.5px; text-decoration: none; color: var(--accent);
+               border: 1px solid var(--line); padding: 5px 9px; border-radius: 7px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <div class="brand">MiniMax-H3 <small>· RunPod</small></div>
+
+    <div class="tabs" role="tablist" id="tabs">
+      <button class="tab" role="tab" data-wf="t2v" aria-selected="true">Text → Video</button>
+      <button class="tab" role="tab" data-wf="i2v" aria-selected="false">Image → Video</button>
+      <button class="tab" role="tab" data-wf="r2v" aria-selected="false"
+              title="Up to 9 reference images guide the subject and style">Reference → Video</button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="chip">
+      <span class="dot off" id="dot"></span>
+      <span id="podstate">not connected</span>
+      <span class="sep" id="s1" hidden>·</span>
+      <b id="uptime" hidden></b>
+      <span class="sep" id="s2" hidden>·</span>
+      <b id="spend" hidden></b>
+    </div>
+
+    <button class="ghost" id="power" disabled>Start pod</button>
+  </div>
+
+  <details class="drawer" id="drawer">
+    <summary>Connection &amp; pod control</summary>
+    <div class="drawerbody">
+      <div class="field" style="flex:1 1 190px">
+        <span>Pod ID</span>
+        <input type="text" id="podid" placeholder="rqdp90nd5ke7yz" spellcheck="false">
+      </div>
+      <div class="field" style="flex:1 1 240px">
+        <span>RunPod API key <span class="hint">— optional, only for start/stop</span></span>
+        <input type="password" id="apikey" placeholder="rpa_…" spellcheck="false" autocomplete="off">
+      </div>
+      <button class="ghost" id="connect">Connect</button>
+      <button class="ghost danger" id="forget" title="Clear the stored pod id and API key">Forget</button>
+      <div class="hint" id="connmsg" style="flex:1 1 100%"></div>
+    </div>
+  </details>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Settings</h2>
+
+    <div id="imgblock" hidden>
+      <label class="lbl0" id="imglbl">First frame <span class="hint">— the clip animates out of this image</span></label>
+      <div id="drop">Drop an image, or click to choose
+        <input type="file" id="file" accept="image/*" hidden>
+      </div>
+      <div id="thumbs"></div>
+    </div>
+
+    <label for="prompt" class="lbl0" id="promptlbl">Prompt
+      <span class="hint">— describe the audio too; H3 generates the soundtrack</span></label>
+    <textarea id="prompt" placeholder="A vintage claw hammer on dark weathered wood, top-down macro, natural workshop lighting. A man's voiceover calmly explains what the tool does."></textarea>
+
+    <div class="row" style="margin-top:14px">
+      <div>
+        <label class="lbl0" for="seconds">Length</label>
+        <select id="seconds">
+          <option value="2">2 s (quick test)</option>
+          <option value="4" selected>4 s</option>
+          <option value="6">6 s</option>
+          <option value="8">8 s</option>
+          <option value="10">10 s</option>
+          <option value="12">12 s</option>
+          <option value="15">15 s</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl0" for="aspect">Aspect</label>
+        <select id="aspect">
+          <option value="1344x768" selected>16:9 · 1344×768</option>
+          <option value="768x1344">9:16 · 768×1344</option>
+          <option value="1024x1024">1:1 · 1024×1024</option>
+          <option value="1152x864">4:3 · 1152×864</option>
+          <option value="864x1152">3:4 · 864×1152</option>
+          <option value="1568x672">21:9 · 1568×672</option>
+          <option value="864x480">16:9 draft · 864×480</option>
+        </select>
+      </div>
+    </div>
+
+    <details class="adv">
+      <summary>Advanced</summary>
+      <div class="row3" style="margin-top:10px">
+        <div>
+          <label class="lbl0" for="steps">Steps</label>
+          <input type="number" id="steps" value="20" min="4" max="60">
+        </div>
+        <div>
+          <label class="lbl0" for="seed">Seed</label>
+          <input type="number" id="seed" placeholder="random">
+        </div>
+        <button class="ghost" id="dice" title="Randomize seed">🎲</button>
+      </div>
+      <p class="hint" id="framenote" style="margin:10px 0 0"></p>
+    </details>
+
+    <button class="primary" id="go" disabled>Connect to a pod first</button>
+    <button class="ghost" id="cancel" style="width:100%;margin-top:8px" hidden>Cancel render</button>
+    <div class="msg" id="err"></div>
+  </section>
+
+  <section class="card">
+    <h2>Output</h2>
+    <div id="stage">
+      <div>Nothing rendered yet.<br><span class="hint">Connect to your pod, write a prompt, hit Generate.</span></div>
+    </div>
+    <div class="bar2" id="barwrap" hidden><i id="bar"></i></div>
+    <div class="meta" id="meta"></div>
+    <div id="gallery"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const REST = "https://rest.runpod.io/v2";
+
+const state = {
+  pod: null, key: null, wf: "t2v", images: [], busy: false,
+  ws: null, clientId: crypto.randomUUID(),
+  info: null,            // last /v2/pods/{id} payload
+  uptimeBase: 0,         // seconds, from the API
+  uptimeAt: 0,           // Date.now() when uptimeBase was read
+};
+
+const base = () => `https://${state.pod}-8188.proxy.runpod.net`;
+const FPS = 24;
+// H3 requires the frame count to satisfy length === 5 (mod 17). Round up to the next
+// legal value — JS % keeps the dividend's sign, so normalise before adding.
+const framesFor = s => {
+  const n = Math.max(5, Math.round(s * FPS));
+  return n + (((5 - n % 17) % 17) + 17) % 17;
+};
+
+const fmtDur = s => {
+  s = Math.max(0, Math.floor(s));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+};
+
+/* ================= pod control (RunPod REST) ================= */
+async function api(path, opts = {}) {
+  if (!state.key) throw new Error("no-key");
+  const r = await fetch(REST + path, {
+    ...opts,
+    headers: { Authorization: `Bearer ${state.key}`, "Content-Type": "application/json", ...(opts.headers || {}) },
+  });
+  if (r.status === 401) throw new Error("API key rejected (401).");
+  if (r.status === 409) throw new Error("That action isn't valid for the pod's current state.");
+  if (!r.ok) throw new Error(`RunPod API HTTP ${r.status}`);
+  return r.status === 204 ? null : r.json();
+}
+
+async function refreshPod() {
+  if (!state.key || !state.pod) return;
+  try {
+    const p = await api(`/pods/${state.pod}`);
+    state.info = p;
+    state.uptimeBase = p.runtime?.uptime ?? 0;
+    state.uptimeAt = Date.now();
+    paintPod();
+  } catch (e) {
+    if (e.message !== "no-key") note(e.message, "warn");
+  }
+}
+
+function paintPod() {
+  const p = state.info;
+  if (!p) return;
+  const running = p.status === "RUNNING";
+  $("podstate").textContent = p.status.toLowerCase();
+  $("power").disabled = false;
+  $("power").textContent = running ? "Stop pod" : "Start pod";
+  $("power").classList.toggle("danger", running);
+  $("s1").hidden = $("uptime").hidden = !running;
+  $("s2").hidden = $("spend").hidden = !running;
+  tickUptime();
+}
+
+function tickUptime() {
+  const p = state.info;
+  if (!p || p.status !== "RUNNING") return;
+  const secs = state.uptimeBase + (Date.now() - state.uptimeAt) / 1000;
+  $("uptime").textContent = fmtDur(secs);
+  if (p.cost) $("spend").textContent = "$" + (p.cost * secs / 3600).toFixed(2);
+}
+
+async function power() {
+  const running = state.info?.status === "RUNNING";
+  const action = running ? "stop" : "start";
+  if (running && !confirm("Stop the pod? Renders in progress will be lost. The network volume and its models are kept.")) return;
+  $("power").disabled = true;
+  $("power").textContent = running ? "Stopping…" : "Starting…";
+  try {
+    await api(`/pods/${state.pod}/action`, { method: "POST", body: JSON.stringify({ action }) });
+    note(running ? "Pod stopping — billing ends shortly." : "Pod starting. ComfyUI needs about a minute after it reaches RUNNING.", "warn");
+    setTimeout(refreshPod, 3000);
+    if (!running) pollUntilReady();
+  } catch (e) {
+    note(e.message, "err");
+    $("power").disabled = false;
+    paintPod();
+  }
+}
+
+/* poll ComfyUI after a start until it answers */
+async function pollUntilReady() {
+  for (let i = 0; i < 80; i++) {
+    await new Promise(r => setTimeout(r, 6000));
+    if (await connect(true)) return;
+  }
+}
+
+/* ================= ComfyUI connection ================= */
+async function connect(quiet) {
+  const id = $("podid").value.trim().replace(/^https?:\/\//, "").split("-")[0];
+  if (!id) return false;
+  state.pod = id;
+  state.key = $("apikey").value.trim() || null;
+  localStorage.setItem("h3pod", id);
+  if (state.key) localStorage.setItem("h3key", state.key);
+
+  refreshPod();
+  if (!quiet) setDot("busy", "Connecting…");
+  try {
+    const r = await fetch(`${base()}/system_stats`, { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}${r.status === 502 ? " — ComfyUI still starting" : ""}`);
+    const s = await r.json();
+    const d = s.devices[0];
+    // ComfyUI reports e.g. "cuda:0 NVIDIA RTX PRO 6000 ... : cudaMallocAsync"
+    const gpu = d.name.replace(/^\w+:\d+\s*/, "").split(":")[0].trim();
+    setDot("on", `${gpu} · ${(d.vram_free / 2 ** 30).toFixed(0)} GiB VRAM free · ComfyUI ${s.system.comfyui_version}`);
+    if (!state.info) $("podstate").textContent = "connected";
+    $("go").disabled = false; $("go").textContent = "Generate";
+    openSocket();
+    return true;
+  } catch (e) {
+    const why = String(e.message).includes("Failed to fetch")
+      ? "ComfyUI unreachable — pod stopped, still booting, or network blocked"
+      : e.message;
+    setDot("off", why);
+    $("go").disabled = true; $("go").textContent = "Connect to a pod first";
+    return false;
+  }
+}
+
+function setDot(cls, msg) { $("dot").className = "dot " + cls; $("connmsg").textContent = msg; }
+function note(msg, kind) { $("err").textContent = msg; $("err").className = "msg" + (msg ? " " + kind : ""); }
+
+function openSocket() {
+  try { state.ws && state.ws.close(); } catch {}
+  const ws = new WebSocket(`wss://${state.pod}-8188.proxy.runpod.net/ws?clientId=${state.clientId}`);
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }   // binary previews arrive too
+    if (m.type === "progress" && m.data.max) {
+      $("barwrap").hidden = false;
+      $("bar").style.width = (100 * m.data.value / m.data.max) + "%";
+      $("meta").innerHTML = `<span>step <code>${m.data.value}/${m.data.max}</code></span>`;
+    }
+  };
+  ws.onclose = () => { if (state.busy) setTimeout(openSocket, 2000); };
+  state.ws = ws;
+}
+
+/* ================= graph ================= */
+function buildGraph({ prompt, width, height, length, steps, seed, imageNames = [], wf }) {
+  const g = {
+    "6":  { class_type: "UNETLoader", inputs: { unet_name: "minimax_h3_fl2va_pruned_int8_convrot.safetensors", weight_dtype: "default" } },
+    "13": { class_type: "CLIPLoader", inputs: { clip_name: "qwen3vl_32b_minimax_h3_int8_convrot.safetensors", type: "minimax", device: "default" } },
+    "11": { class_type: "VAELoader", inputs: { vae_name: "minimax_h3_video_vae_fp16.safetensors" } },
+    "24": { class_type: "VAELoader", inputs: { vae_name: "minimax_h3_audio_vae_fp32.safetensors" } },
+    "104": { class_type: "MiniMaxH3ImageToVideo", inputs: { clip: ["13", 0], vae: ["11", 0], prompt, width, height, length } },
+    "9":  { class_type: "BasicScheduler", inputs: { model: ["6", 0], scheduler: "simple", steps, denoise: 1.0 } },
+    "16": { class_type: "BasicGuider", inputs: { model: ["6", 0], conditioning: ["104", 0] } },
+    "15": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "17": { class_type: "KSamplerSelect", inputs: { sampler_name: "res_multistep" } },
+    "14": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["15", 0], guider: ["16", 0], sampler: ["17", 0], sigmas: ["9", 0], latent_image: ["104", 1] } },
+    "10": { class_type: "VAEDecode", inputs: { samples: ["14", 0], vae: ["11", 0] } },
+    "23": { class_type: "VAEDecodeAudio", inputs: { samples: ["14", 0], vae: ["24", 0] } },
+    "91": { class_type: "CreateVideo", inputs: { images: ["10", 0], fps: FPS, audio: ["23", 0], bit_depth: 8 } },
+    "92": { class_type: "SaveVideo", inputs: { video: ["91", 0], filename_prefix: "video/MiniMax_H3", format: "auto", codec: "auto" } },
+  };
+  // one LoadImage node per uploaded still, numbered from 200
+  imageNames.forEach((name, i) => {
+    g[String(200 + i)] = { class_type: "LoadImage", inputs: { image: name } };
+  });
+
+  if (wf === "i2v" && imageNames.length) {
+    g["104"].inputs.first_frame = ["200", 0];
+  } else if (wf === "r2v") {
+    // Reference-to-video swaps the conditioning node. Its ref_images input is an
+    // autogrow list, addressed as "ref_images.ref_image_N" (prefix from object_info).
+    const inputs = {
+      clip: ["13", 0], vae: ["11", 0], audio_vae: ["24", 0],
+      prompt, width, height, length, ref_image_size: "match",
+    };
+    imageNames.forEach((_n, i) => { inputs[`ref_images.ref_image_${i}`] = [String(200 + i), 0]; });
+    g["104"] = { class_type: "MiniMaxH3ReferenceToVideo", inputs };
+  }
+  return g;
+}
+
+async function uploadImage(file) {
+  const fd = new FormData();
+  fd.append("image", file, file.name);
+  fd.append("overwrite", "true");
+  const r = await fetch(`${base()}/upload/image`, { method: "POST", body: fd });
+  if (!r.ok) throw new Error(`Image upload failed: HTTP ${r.status}`);
+  const j = await r.json();
+  return (j.subfolder ? j.subfolder + "/" : "") + j.name;
+}
+
+/* ================= render ================= */
+async function generate() {
+  const prompt = $("prompt").value.trim();
+  if (!prompt) return note("Write a prompt first.", "err");
+  if (state.wf === "i2v" && !state.images.length) return note("Pick a first-frame image, or switch to Text → Video.", "err");
+  if (state.wf === "r2v" && !state.images.length) return note("Reference → Video needs at least one reference image.", "err");
+
+  setBusy(true); note("");
+  const [width, height] = $("aspect").value.split("x").map(Number);
+  const seed = $("seed").value ? +$("seed").value : Math.floor(Math.random() * 2 ** 32);
+  $("seed").value = seed;
+  const length = framesFor(+$("seconds").value);
+  const t0 = Date.now();
+
+  try {
+    const imageNames = state.wf === "t2v" ? []
+      : await Promise.all(state.images.map(uploadImage));
+    const graph = buildGraph({ prompt, width, height, length, steps: +$("steps").value, seed, imageNames, wf: state.wf });
+
+    const sub = await fetch(`${base()}/prompt`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: graph, client_id: state.clientId }),
+    });
+    const res = await sub.json();
+    if (!sub.ok || !res.prompt_id) throw new Error(describeErrors(res));
+    $("stage").innerHTML = `<div>Rendering…<br><span class="hint">${length} frames · ${width}×${height} · seed ${seed}</span></div>`;
+
+    const hist = await waitFor(res.prompt_id);
+    const file = findVideo(hist);
+    if (!file) throw new Error("Render finished but produced no video file.");
+
+    const qs = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder || "", type: file.type || "output" });
+    const blob = await (await fetch(`${base()}/view?${qs}`)).blob();
+    showVideo(blob, file.filename, { seed, length, width, height, secs: (Date.now() - t0) / 1000 });
+  } catch (e) {
+    note(e.message, "err");
+    $("stage").innerHTML = "<div>Render failed.</div>";
+  } finally { setBusy(false); }
+}
+
+function describeErrors(res) {
+  if (!res.error) return "Submission rejected.";
+  const ne = res.node_errors && Object.keys(res.node_errors).length
+    ? " — " + JSON.stringify(res.node_errors).slice(0, 300) : "";
+  return `${res.error.type || "error"}: ${res.error.message || ""}${ne}`;
+}
+
+async function waitFor(pid) {
+  while (state.busy) {
+    const h = await (await fetch(`${base()}/history/${pid}`, { cache: "no-store" })).json();
+    if (h[pid]) {
+      const st = h[pid].status || {};
+      if (st.completed) return h[pid];
+      if (st.status_str === "error") throw new Error("ComfyUI reported an execution error — check the pod logs.");
+    }
+    await new Promise(r => setTimeout(r, 2500));
+  }
+  throw new Error("Cancelled.");
+}
+
+function findVideo(hist) {
+  for (const out of Object.values(hist.outputs || {}))
+    for (const key of ["videos", "gifs", "images"])
+      for (const f of out[key] || []) if (/\.(mp4|webm|mov)$/i.test(f.filename)) return f;
+  return null;
+}
+
+function showVideo(blob, name, i) {
+  const url = URL.createObjectURL(blob);
+  $("stage").innerHTML = "";
+  const v = document.createElement("video");
+  v.controls = v.autoplay = v.loop = true; v.src = url;
+  $("stage").appendChild(v);
+  $("meta").innerHTML =
+    `<span>seed <code>${i.seed}</code></span><span><code>${i.length}</code> frames</span>
+     <span><code>${i.width}×${i.height}</code></span><span><code>${i.secs.toFixed(0)}s</code> to render</span>
+     <span><code>${(blob.size / 1e6).toFixed(1)} MB</code></span>`;
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.textContent = "⤓ " + name;
+  $("gallery").prepend(a);
+}
+
+function setBusy(b) {
+  state.busy = b;
+  $("go").disabled = b;
+  $("go").textContent = b ? "Rendering…" : "Generate";
+  $("cancel").hidden = !b;
+  $("barwrap").hidden = !b;
+  if (!b) $("bar").style.width = "0";
+}
+
+/* ================= wiring ================= */
+$("tabs").addEventListener("click", e => {
+  const t = e.target.closest(".tab"); if (!t || t.disabled) return;
+  [...$("tabs").children].forEach(b => b.setAttribute("aria-selected", b === t));
+  state.wf = t.dataset.wf;
+  const needsImages = state.wf !== "t2v";
+  $("imgblock").hidden = !needsImages;
+  $("promptlbl").classList.toggle("lbl0", !needsImages);
+  $("file").multiple = state.wf === "r2v";
+  $("imglbl").innerHTML = state.wf === "r2v"
+    ? 'Reference images <span class="hint">— up to 9; they guide subject and style</span>'
+    : 'First frame <span class="hint">— the clip animates out of this image</span>';
+  if (state.images.length > maxImages()) state.images = state.images.slice(0, maxImages());
+  paintThumbs();
+});
+
+$("drop").addEventListener("click", () => $("file").click());
+$("drop").addEventListener("dragover", e => { e.preventDefault(); $("drop").classList.add("hot"); });
+$("drop").addEventListener("dragleave", () => $("drop").classList.remove("hot"));
+$("drop").addEventListener("drop", e => {
+  e.preventDefault(); $("drop").classList.remove("hot");
+  addImages(e.dataTransfer.files);
+});
+$("file").addEventListener("change", e => { addImages(e.target.files); e.target.value = ""; });
+
+const maxImages = () => state.wf === "r2v" ? 9 : 1;
+
+function addImages(files) {
+  for (const f of files) {
+    if (!f.type.startsWith("image/")) continue;
+    if (state.images.length >= maxImages()) {
+      if (maxImages() === 1) state.images = [];        // i2v: replace
+      else { note(`Reference → Video takes at most 9 images.`, "warn"); break; }
+    }
+    state.images.push(f);
+  }
+  paintThumbs();
+}
+
+function paintThumbs() {
+  const box = $("thumbs");
+  box.innerHTML = "";
+  state.images.forEach((f, i) => {
+    const fig = document.createElement("figure");
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(f); img.alt = f.name; img.title = f.name;
+    const x = document.createElement("button");
+    x.textContent = "×"; x.title = "Remove";
+    x.onclick = () => { state.images.splice(i, 1); paintThumbs(); };
+    fig.append(img, x); box.appendChild(fig);
+  });
+  const n = state.images.length, max = maxImages();
+  $("drop").textContent = n === 0
+    ? "Drop an image, or click to choose"
+    : max > 1 ? `${n} of ${max} images — click to add more` : state.images[0].name;
+}
+
+$("connect").addEventListener("click", () => connect());
+$("podid").addEventListener("keydown", e => e.key === "Enter" && connect());
+$("apikey").addEventListener("keydown", e => e.key === "Enter" && connect());
+$("power").addEventListener("click", power);
+$("forget").addEventListener("click", () => {
+  localStorage.removeItem("h3pod"); localStorage.removeItem("h3key");
+  $("podid").value = $("apikey").value = "";
+  state.key = state.pod = state.info = null;
+  setDot("off", "Cleared.");
+  $("power").disabled = true; $("podstate").textContent = "not connected";
+});
+$("go").addEventListener("click", generate);
+$("cancel").addEventListener("click", async () => {
+  state.busy = false;
+  try { await fetch(`${base()}/interrupt`, { method: "POST" }); } catch {}
+  setBusy(false);
+});
+$("dice").addEventListener("click", () => $("seed").value = Math.floor(Math.random() * 2 ** 32));
+$("seconds").addEventListener("change", updateFrameNote);
+function updateFrameNote() {
+  const f = framesFor(+$("seconds").value);
+  $("framenote").textContent = `${f} frames → ${(f / FPS).toFixed(2)}s actual (H3 rounds length to ≡ 5 mod 17).`;
+}
+
+setInterval(tickUptime, 1000);
+setInterval(refreshPod, 30000);
+
+updateFrameNote();
+$("podid").value = localStorage.getItem("h3pod") || "";
+$("apikey").value = localStorage.getItem("h3key") || "";
+if ($("podid").value) connect(); else $("drawer").open = true;
+</script>
+</body>
+</html>
