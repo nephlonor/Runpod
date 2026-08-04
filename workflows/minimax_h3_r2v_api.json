@@ -256,7 +256,7 @@
   },
   "137": {
     "inputs": {
-      "image": "IMG_3451.PNG"
+      "image": "REFERENCE_IMAGE.png"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -265,7 +265,7 @@
   },
   "138": {
     "inputs": {
-      "value": "The man begins to sing a dramatic Italian operatic aria. His chest\nexpands as he draws a deep breath, his jaw drops open into a wide\nsustained vowel, and the muscles of his neck and throat tense\nvisibly. His eyebrows lift and draw together with emotion; his eyes\nclose on the held high note, then open with an upward gaze. He tilts\nhis head back as the note swells, then leans slightly forward as the\nphrase resolves. Subtle secondary motion: shoulders rising with the\nbreath, curls shifting, faint sway of the torso. Dramatic low-key\nstudio lighting, strong chiaroscuro against a dark textured backdrop,\nmonochrome black and white, shallow depth of field, photorealistic\nskin texture with visible pores. Static camera, extremely slow\npush-in. Cinematic, 24 fps.\n"
+      "value": "PROMPT_GOES_HERE"
     },
     "class_type": "PrimitiveStringMultiline",
     "_meta": {
@@ -274,7 +274,7 @@
   },
   "139": {
     "inputs": {
-      "image": "Library - 1 of 1.jpeg"
+      "image": "REFERENCE_IMAGE.png"
     },
     "class_type": "LoadImage",
     "_meta": {
