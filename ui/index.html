@@ -141,7 +141,7 @@
   .msg { padding: 10px 12px; border-radius: 8px; font-size: 13.5px; margin-top: 12px; display: none; }
   .msg.err { display: block; background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
   .msg.warn { display: block; background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
-  #gallery { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  #gallery { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
   #gallery a { font-size: 12.5px; text-decoration: none; color: var(--accent);
                border: 1px solid var(--line); padding: 5px 9px; border-radius: 7px; }
   a { color: var(--accent); }
@@ -636,9 +636,55 @@ function showFromServer(file, info) {
   bits.push(`<span><code>${escapeHtml(file.filename)}</code></span>`);
   $("meta").innerHTML = bits.join("");
   $("gallery").innerHTML = "";
-  const a = document.createElement("a");
-  a.href = viewUrl(file); a.download = file.filename; a.textContent = "⤓ " + file.filename;
-  $("gallery").appendChild(a);
+  const save = document.createElement("button");
+  save.className = "ghost";
+  save.textContent = canSharePhotos() ? "Save to Photos" : "⤓ Download";
+  save.onclick = () => saveToPhotos(file, save);
+  $("gallery").appendChild(save);
+
+  // Where the share sheet exists the button is the primary action, so the plain link is
+  // only worth showing as a secondary escape hatch.
+  if (canSharePhotos()) {
+    const a = document.createElement("a");
+    a.href = viewUrl(file); a.download = file.filename; a.textContent = "⤓ Download";
+    $("gallery").appendChild(a);
+  }
+}
+
+// A web page cannot write to the camera roll directly — that is an OS boundary. The
+// Web Share API is the sanctioned route: on iOS the share sheet offers "Save Video",
+// which lands the clip in Photos. Needs HTTPS and a user gesture, both satisfied here.
+function canSharePhotos() {
+  if (!navigator.canShare) return false;
+  try {
+    return navigator.canShare({ files: [new File([new Blob([1])], "p.mp4", { type: "video/mp4" })] });
+  } catch { return false; }
+}
+
+async function saveToPhotos(file, btn) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Preparing…";
+  try {
+    const blob = await (await fetch(viewUrl(file))).blob();
+    const f = new File([blob], file.filename, { type: blob.type || "video/mp4" });
+
+    if (canSharePhotos()) {
+      await navigator.share({ files: [f], title: file.filename });
+      note("Choose “Save Video” in the share sheet to put it in your camera roll.", "warn");
+    } else {
+      // Desktop and non-supporting browsers: a normal download. iOS Safari without the
+      // share sheet would put this in Files, not Photos.
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = file.filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") note("Could not save: " + e.message, "err");   // AbortError = user dismissed
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
 }
 
 /* ================= history ================= */

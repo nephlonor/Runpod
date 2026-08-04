@@ -129,9 +129,23 @@ soundtrack is passed as reference audio.
 - **Output** — inline player plus download, with seed and timing metadata
 - **Queue** — submitting does not block, so you can stack jobs up; each is tracked
   separately with its own progress and cancel button
+- **Save to Photos** — on iOS, opens the share sheet so the clip can go straight to the
+  camera roll; falls back to a plain download elsewhere
 - **History** — a collapsible grid of the last 100 outputs on the pod, read from
   ComfyUI's own `/history`, so it survives page reloads and includes runs made from
   ComfyUI's interface. Hover to preview, click to load into the player.
+
+### Saving to the camera roll
+
+A web page cannot write to Photos directly — that is an OS boundary, not something a
+different implementation gets around. The Web Share API is the sanctioned route: the
+button hands the file to iOS's share sheet, where **Save Video** puts it in the camera
+roll. One extra tap, and it is the only path that reaches Photos at all.
+
+Requires HTTPS (the Pages URL qualifies; opening `index.html` from disk on a phone does
+not) and a user gesture. Browsers without file sharing — desktop Chrome, Firefox — get a
+normal download instead, and the button says so. On iOS a plain download would land in
+Files, not Photos, which is why the share sheet is used.
 
 ### On "simultaneous" jobs
 
