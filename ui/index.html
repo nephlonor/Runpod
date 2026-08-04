@@ -114,6 +114,24 @@
   .rthumbs figcaption { font-size: 10.5px; color: var(--muted); text-align: center; margin-top: 2px; }
   .bad { color: var(--err); }
 
+  .job { display: flex; gap: 9px; align-items: center; padding: 7px 9px; border: 1px solid var(--line);
+         border-radius: 8px; margin-top: 6px; font-size: 13px; }
+  .job.done { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+  .job.error { border-color: color-mix(in srgb, var(--err) 40%, var(--line)); }
+  .job .jstatus { width: 14px; text-align: center; flex: none; }
+  .job .jtext { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job .jmeta { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  .job .jerr { color: var(--err); font-size: 11.5px; }
+  .job.running { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+
+  #histgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+              gap: 9px; margin-top: 10px; max-height: 60vh; overflow-y: auto; }
+  .hitem { margin: 0; cursor: pointer; }
+  .hitem video { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 7px;
+                 background: #000; display: block; }
+  .hitem figcaption { font-size: 11px; color: var(--muted); margin-top: 3px;
+                      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   #stage { min-height: 330px; display: grid; place-items: center; text-align: center; color: var(--muted); }
   video { width: 100%; border-radius: 8px; background: #000; display: block; }
   .bar2 { height: 6px; background: var(--bg); border-radius: 99px; overflow: hidden; margin: 12px 0 4px; }
@@ -258,7 +276,6 @@
     </details>
 
     <button class="primary" id="go" disabled>Connect to a pod first</button>
-    <button class="ghost" id="cancel" style="width:100%;margin-top:8px" hidden>Cancel render</button>
     <div class="msg" id="err"></div>
   </section>
 
@@ -267,9 +284,19 @@
     <div id="stage">
       <div>Nothing rendered yet.<br><span class="hint">Connect to your pod, write a prompt, hit Generate.</span></div>
     </div>
-    <div class="bar2" id="barwrap" hidden><i id="bar"></i></div>
     <div class="meta" id="meta"></div>
     <div id="gallery"></div>
+
+    <div id="jobswrap" hidden>
+      <h2 style="margin-top:18px">Queue <span class="hint" id="jobcount"></span></h2>
+      <div id="jobs"></div>
+      <p class="hint" style="margin:8px 0 0">One GPU runs one job at a time — extra jobs queue and run in turn.</p>
+    </div>
+
+    <details class="adv" id="histwrap">
+      <summary>History <span class="hint">(<span id="histcount">0</span> outputs on this pod)</span></summary>
+      <div id="histgrid"></div>
+    </details>
   </section>
 </main>
 
@@ -283,9 +310,11 @@ const $ = id => document.getElementById(id);
 // with it the fetch throws. Use the console, or Claude via the RunPod MCP connector.
 
 const state = {
-  pod: null, wf: "t2v", images: [], refs: { image: [], video: [], audio: [] }, busy: false,
+  pod: null, wf: "t2v", images: [], refs: { image: [], video: [], audio: [] },
+  jobs: [], history: [], ticker: null,
   ws: null, clientId: crypto.randomUUID(),
 };
+const HISTORY_MAX = 100;
 
 const base = () => `https://${state.pod}-8188.proxy.runpod.net`;
 const FPS = 24;
@@ -318,6 +347,7 @@ async function connect(quiet) {
     const gpu = d.name.replace(/^\w+:\d+\s*/, "").split(":")[0].trim();
     setDot("on", `${gpu} · ${(d.vram_free / 2 ** 30).toFixed(0)} GiB VRAM free · ComfyUI ${s.system.comfyui_version}`);
     $("podstate").textContent = "connected";
+    refreshHistory();
     $("go").disabled = false; $("go").textContent = "Generate";
     openSocket();
     return true;
@@ -343,12 +373,13 @@ function openSocket() {
   ws.onmessage = ev => {
     let m; try { m = JSON.parse(ev.data); } catch { return; }   // binary previews arrive too
     if (m.type === "progress" && m.data.max) {
-      $("barwrap").hidden = false;
-      $("bar").style.width = (100 * m.data.value / m.data.max) + "%";
-      $("meta").innerHTML = `<span>step <code>${m.data.value}/${m.data.max}</code></span>`;
+      // newer ComfyUI tags progress with prompt_id; fall back to the running job
+      const j = state.jobs.find(x => x.id === m.data.prompt_id)
+             || state.jobs.find(x => x.status === "running");
+      if (j) { j.progress = { value: m.data.value, max: m.data.max }; paintJobs(); }
     }
   };
-  ws.onclose = () => { if (state.busy) setTimeout(openSocket, 2000); };
+  ws.onclose = () => { if (activeJobs().length) setTimeout(openSocket, 2000); };
   state.ws = ws;
 }
 
@@ -433,7 +464,11 @@ function probeDuration(file) {
   });
 }
 
-/* ================= render ================= */
+/* ================= jobs ================= */
+// ComfyUI executes one prompt at a time per GPU, so submitting several does not run
+// them in parallel — they queue and run back-to-back. What this buys is a non-blocking
+// UI: you can stack jobs up and watch all of them.
+
 async function generate() {
   const prompt = $("prompt").value.trim();
   if (!prompt) return note("Write a prompt first.", "err");
@@ -444,24 +479,27 @@ async function generate() {
     if (problems.length) return note(problems.join("; ") + ".", "err");
   }
 
-  setBusy(true); note("");
+  note("");
   const [width, height] = $("aspect").value.split("x").map(Number);
   const seed = $("seed").value ? +$("seed").value : Math.floor(Math.random() * 2 ** 32);
-  $("seed").value = seed;
   const length = framesFor(+$("seconds").value);
-  const t0 = Date.now();
+  const wf = state.wf;
+  const job = {
+    id: null, wf, prompt, seed, length, width, height,
+    steps: +$("steps").value, status: "uploading", t0: Date.now(), progress: null, file: null,
+  };
+  state.jobs.unshift(job);
+  paintJobs();
 
   try {
     let imageNames = [], videoNames = [], audioNames = [];
-    if (state.wf === "i2v") {
-      imageNames = await Promise.all(state.images.map(uploadAsset));
-    } else if (state.wf === "r2v") {
-      $("stage").innerHTML = `<div>Uploading ${refTotal()} reference file(s)…</div>`;
+    if (wf === "i2v") imageNames = await Promise.all(state.images.map(uploadAsset));
+    else if (wf === "r2v")
       [imageNames, videoNames, audioNames] = await Promise.all(
         ["image", "video", "audio"].map(k => Promise.all(state.refs[k].map(e => uploadAsset(e.file)))));
-    }
+
     const graph = buildGraph({
-      prompt, width, height, length, steps: +$("steps").value, seed, wf: state.wf,
+      prompt, width, height, length, steps: job.steps, seed, wf,
       imageNames, videoNames, audioNames, useVideoAudio: $("usevidaudio").checked });
 
     const sub = await fetch(`${base()}/prompt`, {
@@ -470,19 +508,15 @@ async function generate() {
     });
     const res = await sub.json();
     if (!sub.ok || !res.prompt_id) throw new Error(describeErrors(res));
-    $("stage").innerHTML = `<div>Rendering…<br><span class="hint">${length} frames · ${width}×${height} · seed ${seed}</span></div>`;
-
-    const hist = await waitFor(res.prompt_id);
-    const file = findVideo(hist);
-    if (!file) throw new Error("Render finished but produced no video file.");
-
-    const qs = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder || "", type: file.type || "output" });
-    const blob = await (await fetch(`${base()}/view?${qs}`)).blob();
-    showVideo(blob, file.filename, { seed, length, width, height, secs: (Date.now() - t0) / 1000 });
+    job.id = res.prompt_id;
+    job.status = "queued";
+    $("seed").value = "";            // next submit gets a fresh seed
+    startTicking();
   } catch (e) {
+    job.status = "error"; job.error = e.message;
     note(e.message, "err");
-    $("stage").innerHTML = "<div>Render failed.</div>";
-  } finally { setBusy(false); }
+  }
+  paintJobs();
 }
 
 function describeErrors(res) {
@@ -492,17 +526,86 @@ function describeErrors(res) {
   return `${res.error.type || "error"}: ${res.error.message || ""}${ne}`;
 }
 
-async function waitFor(pid) {
-  while (state.busy) {
-    const h = await (await fetch(`${base()}/history/${pid}`, { cache: "no-store" })).json();
-    if (h[pid]) {
-      const st = h[pid].status || {};
-      if (st.completed) return h[pid];
-      if (st.status_str === "error") throw new Error("ComfyUI reported an execution error — check the pod logs.");
+const activeJobs = () => state.jobs.filter(j => ["uploading", "queued", "running"].includes(j.status));
+
+function startTicking() {
+  if (state.ticker) return;
+  state.ticker = setInterval(tick, 2500);
+  tick();
+}
+
+async function tick() {
+  const active = activeJobs();
+  if (!active.length) { clearInterval(state.ticker); state.ticker = null; paintJobs(); return; }
+  try {
+    const q = await (await fetch(`${base()}/queue`, { cache: "no-store" })).json();
+    const running = new Set((q.queue_running || []).map(i => i[1]));
+    const pending = new Set((q.queue_pending || []).map(i => i[1]));
+    for (const j of active) {
+      if (!j.id) continue;
+      if (running.has(j.id)) { j.status = "running"; continue; }
+      if (pending.has(j.id)) { j.status = "queued"; continue; }
+      // no longer in the queue: it finished, failed, or was cancelled elsewhere
+      const h = await (await fetch(`${base()}/history/${j.id}`, { cache: "no-store" })).json();
+      const e = h[j.id];
+      if (!e) { j.status = "error"; j.error = "Vanished from the queue without producing history."; continue; }
+      const st = e.status || {};
+      if (st.status_str === "error") { j.status = "error"; j.error = "ComfyUI reported an execution error."; continue; }
+      if (st.completed) {
+        j.file = findVideo(e);
+        j.secs = (Date.now() - j.t0) / 1000;
+        j.status = j.file ? "done" : "error";
+        if (!j.file) j.error = "Finished but produced no video.";
+        if (j.file) { showFromServer(j.file, j); refreshHistory(); }
+      }
     }
-    await new Promise(r => setTimeout(r, 2500));
+  } catch { /* transient network blip; next tick retries */ }
+  paintJobs();
+}
+
+function paintJobs() {
+  const box = $("jobs");
+  const active = activeJobs();
+  const recent = state.jobs.slice(0, 8);
+  $("jobswrap").hidden = recent.length === 0;
+  $("jobcount").textContent = active.length ? `${active.length} active` : "idle";
+  box.innerHTML = "";
+  for (const j of recent) {
+    const row = document.createElement("div");
+    row.className = "job " + j.status;
+    const pct = j.progress && j.progress.max ? Math.round(100 * j.progress.value / j.progress.max) : null;
+    row.innerHTML = `
+      <span class="jstatus">${{uploading:"⤴", queued:"…", running:"▶", done:"✓", error:"✕"}[j.status]}</span>
+      <span class="jtext" title="${escapeHtml(j.prompt)}">${escapeHtml(j.prompt.slice(0, 70))}</span>
+      <span class="jmeta">${j.wf} · ${j.length}f · ${j.width}×${j.height}${pct !== null ? " · " + pct + "%" : ""}${j.secs ? " · " + j.secs.toFixed(0) + "s" : ""}</span>`;
+    if (j.status === "done" && j.file) {
+      row.style.cursor = "pointer";
+      row.onclick = () => showFromServer(j.file, j);
+    }
+    if (["queued", "running"].includes(j.status)) {
+      const c = document.createElement("button");
+      c.className = "ghost"; c.textContent = "cancel";
+      c.onclick = ev => { ev.stopPropagation(); cancelJob(j); };
+      row.appendChild(c);
+    }
+    if (j.status === "error") {
+      const e = document.createElement("span");
+      e.className = "jerr"; e.textContent = j.error || "failed";
+      row.appendChild(e);
+    }
+    box.appendChild(row);
   }
-  throw new Error("Cancelled.");
+}
+
+async function cancelJob(j) {
+  try {
+    if (j.status === "running") await fetch(`${base()}/interrupt`, { method: "POST" });
+    else await fetch(`${base()}/queue`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ delete: [j.id] }) });
+    j.status = "error"; j.error = "cancelled";
+  } catch (e) { note(e.message, "err"); }
+  paintJobs();
 }
 
 function findVideo(hist) {
@@ -512,28 +615,74 @@ function findVideo(hist) {
   return null;
 }
 
-function showVideo(blob, name, i) {
-  const url = URL.createObjectURL(blob);
+const viewUrl = f => `${base()}/view?` + new URLSearchParams(
+  { filename: f.filename, subfolder: f.subfolder || "", type: f.type || "output" });
+
+// Stream straight from the pod rather than buffering a blob: with up to 100 history
+// entries, holding every clip in memory is not viable.
+function showFromServer(file, info) {
   $("stage").innerHTML = "";
   const v = document.createElement("video");
-  v.controls = v.autoplay = v.loop = true; v.src = url;
+  v.controls = v.autoplay = v.loop = true;
+  v.src = viewUrl(file);
   $("stage").appendChild(v);
-  $("meta").innerHTML =
-    `<span>seed <code>${i.seed}</code></span><span><code>${i.length}</code> frames</span>
-     <span><code>${i.width}×${i.height}</code></span><span><code>${i.secs.toFixed(0)}s</code> to render</span>
-     <span><code>${(blob.size / 1e6).toFixed(1)} MB</code></span>`;
+  const bits = [];
+  if (info) {
+    if (info.seed !== undefined) bits.push(`<span>seed <code>${info.seed}</code></span>`);
+    if (info.length) bits.push(`<span><code>${info.length}</code> frames</span>`);
+    if (info.width) bits.push(`<span><code>${info.width}×${info.height}</code></span>`);
+    if (info.secs) bits.push(`<span><code>${info.secs.toFixed(0)}s</code> to render</span>`);
+  }
+  bits.push(`<span><code>${escapeHtml(file.filename)}</code></span>`);
+  $("meta").innerHTML = bits.join("");
+  $("gallery").innerHTML = "";
   const a = document.createElement("a");
-  a.href = url; a.download = name; a.textContent = "⤓ " + name;
-  $("gallery").prepend(a);
+  a.href = viewUrl(file); a.download = file.filename; a.textContent = "⤓ " + file.filename;
+  $("gallery").appendChild(a);
 }
 
-function setBusy(b) {
-  state.busy = b;
-  $("go").disabled = b;
-  $("go").textContent = b ? "Rendering…" : "Generate";
-  $("cancel").hidden = !b;
-  $("barwrap").hidden = !b;
-  if (!b) $("bar").style.width = "0";
+/* ================= history ================= */
+async function refreshHistory() {
+  if (!state.pod) return;
+  try {
+    const h = await (await fetch(`${base()}/history?max_items=${HISTORY_MAX}`, { cache: "no-store" })).json();
+    // /history is oldest-first; newest is the more useful end.
+    const items = Object.entries(h).reverse().flatMap(([pid, e]) => {
+      const f = findVideo(e);
+      if (!f) return [];
+      const node = Object.values(e.prompt?.[2] || {}).find(n => /MiniMaxH3/.test(n.class_type || ""));
+      const p = typeof node?.inputs?.prompt === "string" ? node.inputs.prompt : "";
+      return [{ pid, file: f, prompt: p }];
+    }).slice(0, HISTORY_MAX);
+    state.history = items;
+    paintHistory();
+  } catch { /* pod may be gone; leave the last good list up */ }
+}
+
+function paintHistory() {
+  $("histcount").textContent = state.history.length;
+  const box = $("histgrid");
+  box.innerHTML = "";
+  for (const it of state.history) {
+    const fig = document.createElement("figure");
+    fig.className = "hitem";
+    const v = document.createElement("video");
+    v.src = viewUrl(it.file);
+    v.preload = "metadata";           // fetch the poster frame, not the whole clip
+    v.muted = true;
+    v.onmouseenter = () => v.play().catch(() => {});
+    v.onmouseleave = () => { v.pause(); v.currentTime = 0; };
+    const cap = document.createElement("figcaption");
+    cap.textContent = it.prompt ? it.prompt.slice(0, 60) : it.file.filename;
+    cap.title = it.prompt || it.file.filename;
+    fig.append(v, cap);
+    fig.onclick = () => { showFromServer(it.file, null); window.scrollTo({ top: 0, behavior: "smooth" }); };
+    box.appendChild(fig);
+  }
+}
+
+function escapeHtml(t) {
+  return String(t).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 /* ================= wiring ================= */
@@ -684,11 +833,6 @@ $("forget").addEventListener("click", () => {
   $("podstate").textContent = "not connected";
 });
 $("go").addEventListener("click", generate);
-$("cancel").addEventListener("click", async () => {
-  state.busy = false;
-  try { await fetch(`${base()}/interrupt`, { method: "POST" }); } catch {}
-  setBusy(false);
-});
 $("dice").addEventListener("click", () => $("seed").value = Math.floor(Math.random() * 2 ** 32));
 $("seconds").addEventListener("change", updateFrameNote);
 function updateFrameNote() {

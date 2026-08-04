@@ -127,6 +127,18 @@ soundtrack is passed as reference audio.
 > image path is confirmed working.
 - **Live progress** — step-by-step over ComfyUI's websocket
 - **Output** — inline player plus download, with seed and timing metadata
+- **Queue** — submitting does not block, so you can stack jobs up; each is tracked
+  separately with its own progress and cancel button
+- **History** — a collapsible grid of the last 100 outputs on the pod, read from
+  ComfyUI's own `/history`, so it survives page reloads and includes runs made from
+  ComfyUI's interface. Hover to preview, click to load into the player.
+
+### On "simultaneous" jobs
+
+ComfyUI executes **one prompt at a time per GPU**. Queuing several does not make them
+run in parallel — they run back-to-back. The UI is non-blocking so you can queue work
+and watch it drain, but throughput is one job at a time. Genuine parallelism needs more
+pods, each with its own ComfyUI.
 
 ### What the page deliberately cannot do
 
