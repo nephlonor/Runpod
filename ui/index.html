@@ -126,7 +126,13 @@
 
   #histgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
               gap: 9px; margin-top: 10px; max-height: 60vh; overflow-y: auto; }
-  .hitem { margin: 0; cursor: pointer; }
+  .hitem { margin: 0; cursor: pointer; position: relative; }
+  .hsave { position: absolute; top: 5px; right: 5px; padding: 3px 7px; font-size: 11px;
+           border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+           background: color-mix(in srgb, var(--panel) 82%, transparent);
+           color: var(--ink); opacity: 0; transition: opacity .15s; }
+  .hitem:hover .hsave, .hsave:focus-visible { opacity: 1; }
+  @media (hover: none) { .hsave { opacity: 1; } }   /* touch devices get no hover */
   .hitem video { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 7px;
                  background: #000; display: block; }
   .hitem figcaption { font-size: 11px; color: var(--muted); margin-top: 3px;
@@ -721,7 +727,14 @@ function paintHistory() {
     const cap = document.createElement("figcaption");
     cap.textContent = it.prompt ? it.prompt.slice(0, 60) : it.file.filename;
     cap.title = it.prompt || it.file.filename;
-    fig.append(v, cap);
+
+    const save = document.createElement("button");
+    save.className = "hsave";
+    save.textContent = canSharePhotos() ? "⤓ Photos" : "⤓";
+    save.title = canSharePhotos() ? "Save to Photos" : "Download";
+    save.onclick = ev => { ev.stopPropagation(); saveToPhotos(it.file, save); };
+
+    fig.append(v, save, cap);
     fig.onclick = () => { showFromServer(it.file, null); window.scrollTo({ top: 0, behavior: "smooth" }); };
     box.appendChild(fig);
   }
