@@ -76,6 +76,8 @@
   textarea { resize: vertical; min-height: 118px; line-height: 1.45; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0 0; height: 24px; }
+  #secval { float: right; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
   .row3 { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
 
   details.adv { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
@@ -134,7 +136,12 @@
   .hitem:hover .hsave, .hsave:focus-visible { opacity: 1; }
   @media (hover: none) { .hsave { opacity: 1; } }   /* touch devices get no hover */
   .hitem video { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 7px;
-                 background: #000; display: block; }
+                 display: block; opacity: 0; transition: opacity .2s;
+                 background: linear-gradient(110deg, var(--bg) 30%,
+                   color-mix(in srgb, var(--ink) 7%, var(--bg)) 50%, var(--bg) 70%)
+                   0 0 / 300% 100%; animation: shimmer 1.3s linear infinite; }
+  .hitem video.ready { opacity: 1; animation: none; background: #000; }
+  @keyframes shimmer { to { background-position: -300% 0; } }
   .hitem figcaption { font-size: 11px; color: var(--muted); margin-top: 3px;
                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -240,16 +247,8 @@
 
     <div class="row" style="margin-top:14px">
       <div>
-        <label class="lbl0" for="seconds">Length</label>
-        <select id="seconds">
-          <option value="2">2 s (quick test)</option>
-          <option value="4" selected>4 s</option>
-          <option value="6">6 s</option>
-          <option value="8">8 s</option>
-          <option value="10">10 s</option>
-          <option value="12">12 s</option>
-          <option value="15">15 s</option>
-        </select>
+        <label class="lbl0" for="seconds">Length <b id="secval">4 s</b></label>
+        <input type="range" id="seconds" min="2" max="15" step="1" value="4">
       </div>
       <div>
         <label class="lbl0" for="aspect">Aspect</label>
@@ -765,6 +764,29 @@ async function saveToPhotos(file, btn) {
 }
 
 /* ================= history ================= */
+// Thumbnails load with bounded concurrency rather than lazily on scroll: every tile
+// must end up showing a frame, and visibility-based loading leaves off-screen tiles
+// blank (and depends on IntersectionObserver actually firing, which is not guaranteed
+// in every embedding). Four at a time keeps 100 clips from saturating the connection.
+const THUMB_CONCURRENCY = 4;
+let thumbQueue = [], thumbActive = 0;
+
+function queueThumb(v) { thumbQueue.push(v); pumpThumbs(); }
+
+function pumpThumbs() {
+  while (thumbActive < THUMB_CONCURRENCY && thumbQueue.length) {
+    const v = thumbQueue.shift();
+    if (!v.isConnected || !v.dataset.src) continue;      // tile was replaced by a repaint
+    thumbActive++;
+    const done = () => { thumbActive--; pumpThumbs(); };
+    v.addEventListener("loadeddata", done, { once: true });
+    v.addEventListener("error", done, { once: true });
+    setTimeout(() => { if (thumbActive > 0 && v.readyState < 2) done(); }, 8000);  // never wedge the queue
+    v.src = v.dataset.src;
+    delete v.dataset.src;
+  }
+}
+
 async function refreshHistory() {
   if (!state.pod) return;
   try {
@@ -785,16 +807,26 @@ async function refreshHistory() {
 function paintHistory() {
   $("histcount").textContent = state.history.length;
   const box = $("histgrid");
+  thumbQueue = [];
   box.innerHTML = "";
   for (const it of state.history) {
     const fig = document.createElement("figure");
     fig.className = "hitem";
     const v = document.createElement("video");
-    v.src = viewUrl(it.file);
-    v.preload = "metadata";           // fetch the poster frame, not the whole clip
+    v.preload = "metadata";
     v.muted = true;
-    v.onmouseenter = () => v.play().catch(() => {});
-    v.onmouseleave = () => { v.pause(); v.currentTime = 0; };
+    v.playsInline = true;
+    // "#t=0.1" asks the browser to seek slightly in, so a real frame is decoded rather
+    // than leaving the element black. Some browsers ignore it, hence the seek fallback.
+    v.dataset.src = viewUrl(it.file) + "#t=0.1";
+    v.addEventListener("loadedmetadata", () => {
+      if (v.currentTime === 0 && Number.isFinite(v.duration))
+        v.currentTime = Math.min(0.1, v.duration / 10);
+    }, { once: true });
+    v.addEventListener("loadeddata", () => v.classList.add("ready"), { once: true });
+    v.onmouseenter = () => { v.currentTime = 0; v.play().catch(() => {}); };
+    v.onmouseleave = () => { v.pause(); v.currentTime = Math.min(0.1, v.duration / 10 || 0.1); };
+    queueThumb(v);                    // bounded-concurrency thumbnail load
     const cap = document.createElement("figcaption");
     cap.textContent = it.prompt ? it.prompt.slice(0, 60) : it.file.filename;
     cap.title = it.prompt || it.file.filename;
@@ -964,10 +996,15 @@ $("forget").addEventListener("click", () => {
 });
 $("go").addEventListener("click", generate);
 $("dice").addEventListener("click", () => $("seed").value = Math.floor(Math.random() * 2 ** 32));
-$("seconds").addEventListener("change", updateFrameNote);
+$("seconds").addEventListener("input", updateFrameNote);
 function updateFrameNote() {
-  const f = framesFor(+$("seconds").value);
-  $("framenote").textContent = `${f} frames → ${(f / FPS).toFixed(2)}s actual (H3 rounds length to ≡ 5 mod 17).`;
+  const want = +$("seconds").value;
+  const f = framesFor(want);
+  $("secval").textContent = want + " s";
+  // The model card specifies 4-15s; shorter clips do render but are outside spec.
+  const caveat = want < 4 ? " · under the model's 4 s minimum, useful for quick tests" : "";
+  $("framenote").textContent =
+    `${f} frames → ${(f / FPS).toFixed(2)}s actual (H3 rounds length to ≡ 5 mod 17)${caveat}.`;
 }
 
 
