@@ -105,7 +105,26 @@ It talks to ComfyUI from **your browser**, which is not subject to the sandbox n
 restrictions that block Claude's cloud sessions. The pod template launches ComfyUI with
 `--enable-cors-header *`, so cross-origin calls are allowed.
 
-- **Workflow selector** — Text → Video, Image → Video, Reference → Video (up to 9 images)
+- **Workflow selector** — Text → Video, Image → Video, Reference → Video
+
+Reference → Video accepts images, videos and audio clips, with the model card's limits
+enforced in the browser before anything is uploaded:
+
+| Input | Limit |
+|---|---|
+| Images | ≤ 9 |
+| Videos | ≤ 3 clips, 2–15 s each, ≤ 15 s total |
+| Audio | ≤ 3 clips, 2–15 s each, ≤ 15 s total, never the only input |
+| All types | ≤ 12 files |
+
+Durations are probed client-side, so an out-of-range clip is rejected before it costs
+GPU time. A reference video is decoded on the pod via `LoadVideo` → `GetVideoComponents`,
+which yields both the frames and the soundtrack; a checkbox controls whether that
+soundtrack is passed as reference audio.
+
+> **Untested:** the video and audio reference path has been validated structurally
+> (graph shape, node wiring, output indices) but has not yet run on a live pod. The
+> image path is confirmed working.
 - **Live progress** — step-by-step over ComfyUI's websocket
 - **Output** — inline player plus download, with seed and timing metadata
 

@@ -99,6 +99,21 @@
                    color: var(--muted); font-size: 11px; line-height: 1; cursor: pointer; }
   #thumbs figure:only-child img { height: auto; width: auto; max-width: 100%; max-height: 180px; margin: 0 auto; }
 
+  .rdrop { border: 1.5px dashed var(--line); border-radius: 8px; padding: 11px; text-align: center;
+           color: var(--muted); cursor: pointer; font-size: 13px; }
+  .rdrop.hot { border-color: var(--accent); color: var(--ink); }
+  .rthumbs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .rthumbs figure { margin: 0; position: relative; }
+  .rthumbs img, .rthumbs video { height: 54px; width: 54px; object-fit: cover; border-radius: 6px; display: block; background: #000; }
+  .rthumbs .chipfile { display: flex; align-items: center; gap: 6px; height: 54px; padding: 0 10px;
+                       border: 1px solid var(--line); border-radius: 6px; font-size: 12px; max-width: 170px; }
+  .rthumbs .chipfile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rthumbs button { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
+                    border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
+                    color: var(--muted); font-size: 11px; line-height: 1; cursor: pointer; }
+  .rthumbs figcaption { font-size: 10.5px; color: var(--muted); text-align: center; margin-top: 2px; }
+  .bad { color: var(--err); }
+
   #stage { min-height: 330px; display: grid; place-items: center; text-align: center; color: var(--muted); }
   video { width: 100%; border-radius: 8px; background: #000; display: block; }
   .bar2 { height: 6px; background: var(--bg); border-radius: 99px; overflow: hidden; margin: 12px 0 4px; }
@@ -168,6 +183,31 @@
         <input type="file" id="file" accept="image/*" hidden>
       </div>
       <div id="thumbs"></div>
+    </div>
+
+    <div id="refblock" hidden>
+      <label class="lbl0">Reference images <span class="hint">— up to 9</span></label>
+      <div class="rdrop" data-kind="image">Drop images, or click
+        <input type="file" data-kind="image" accept="image/*" multiple hidden>
+      </div>
+      <div class="rthumbs" data-kind="image"></div>
+
+      <label>Reference videos <span class="hint">— up to 3 clips, 2–15 s each, 15 s total</span></label>
+      <div class="rdrop" data-kind="video">Drop videos, or click
+        <input type="file" data-kind="video" accept="video/*" multiple hidden>
+      </div>
+      <div class="rthumbs" data-kind="video"></div>
+      <label style="margin-top:8px; font-weight:400; font-size:12.5px; display:flex; gap:7px; align-items:center">
+        <input type="checkbox" id="usevidaudio" checked style="width:auto"> Use each clip's own soundtrack as reference audio
+      </label>
+
+      <label>Reference audio <span class="hint">— up to 3, 2–15 s each; needs an image or video too</span></label>
+      <div class="rdrop" data-kind="audio">Drop audio, or click
+        <input type="file" data-kind="audio" accept="audio/*" multiple hidden>
+      </div>
+      <div class="rthumbs" data-kind="audio"></div>
+
+      <p class="hint" id="refcount" style="margin:10px 0 0"></p>
     </div>
 
     <label for="prompt" class="lbl0" id="promptlbl">Prompt
@@ -243,7 +283,7 @@ const $ = id => document.getElementById(id);
 // with it the fetch throws. Use the console, or Claude via the RunPod MCP connector.
 
 const state = {
-  pod: null, wf: "t2v", images: [], busy: false,
+  pod: null, wf: "t2v", images: [], refs: { image: [], video: [], audio: [] }, busy: false,
   ws: null, clientId: crypto.randomUUID(),
 };
 
@@ -313,7 +353,8 @@ function openSocket() {
 }
 
 /* ================= graph ================= */
-function buildGraph({ prompt, width, height, length, steps, seed, imageNames = [], wf }) {
+function buildGraph({ prompt, width, height, length, steps, seed, wf,
+                      imageNames = [], videoNames = [], audioNames = [], useVideoAudio = true }) {
   const g = {
     "6":  { class_type: "UNETLoader", inputs: { unet_name: "minimax_h3_fl2va_pruned_int8_convrot.safetensors", weight_dtype: "default" } },
     "13": { class_type: "CLIPLoader", inputs: { clip_name: "qwen3vl_32b_minimax_h3_int8_convrot.safetensors", type: "minimax", device: "default" } },
@@ -338,26 +379,58 @@ function buildGraph({ prompt, width, height, length, steps, seed, imageNames = [
   if (wf === "i2v" && imageNames.length) {
     g["104"].inputs.first_frame = ["200", 0];
   } else if (wf === "r2v") {
-    // Reference-to-video swaps the conditioning node. Its ref_images input is an
-    // autogrow list, addressed as "ref_images.ref_image_N" (prefix from object_info).
+    // Reference-to-video swaps the conditioning node. Its reference inputs are autogrow
+    // lists, addressed as "<list>.<prefix><N>" (prefixes come from object_info).
     const inputs = {
       clip: ["13", 0], vae: ["11", 0], audio_vae: ["24", 0],
       prompt, width, height, length, ref_image_size: "match",
     };
     imageNames.forEach((_n, i) => { inputs[`ref_images.ref_image_${i}`] = [String(200 + i), 0]; });
+
+    // A reference video is decoded to frames + soundtrack:
+    //   LoadVideo -> VIDEO -> GetVideoComponents -> (images, audio, fps, bit_depth)
+    videoNames.forEach((name, j) => {
+      const load = String(300 + j), comp = String(320 + j);
+      g[load] = { class_type: "LoadVideo", inputs: { file: name } };
+      g[comp] = { class_type: "GetVideoComponents", inputs: { video: [load, 0] } };
+      inputs[`ref_videos.ref_video_${j}`] = [comp, 0];              // images
+      if (useVideoAudio) inputs[`ref_video_audios.ref_video_audio_${j}`] = [comp, 1];  // audio
+    });
+
+    audioNames.forEach((name, k) => {
+      const n = String(340 + k);
+      g[n] = { class_type: "LoadAudio", inputs: { audio: name } };
+      inputs[`ref_audios.ref_audio_${k}`] = [n, 0];
+    });
+
     g["104"] = { class_type: "MiniMaxH3ReferenceToVideo", inputs };
   }
   return g;
 }
 
-async function uploadImage(file) {
+async function uploadImage(file) { return uploadAsset(file); }
+
+// ComfyUI's /upload/image writes into the shared input directory, which is also where
+// LoadVideo and LoadAudio look, so one endpoint covers all three asset kinds.
+async function uploadAsset(file) {
   const fd = new FormData();
   fd.append("image", file, file.name);
   fd.append("overwrite", "true");
   const r = await fetch(`${base()}/upload/image`, { method: "POST", body: fd });
-  if (!r.ok) throw new Error(`Image upload failed: HTTP ${r.status}`);
+  if (!r.ok) throw new Error(`Upload of ${file.name} failed: HTTP ${r.status}`);
   const j = await r.json();
   return (j.subfolder ? j.subfolder + "/" : "") + j.name;
+}
+
+// Read duration client-side so the model's 2-15s rule is enforced before rendering.
+function probeDuration(file) {
+  return new Promise(resolve => {
+    const el = document.createElement(file.type.startsWith("audio/") ? "audio" : "video");
+    el.preload = "metadata";
+    el.onloadedmetadata = () => { URL.revokeObjectURL(el.src); resolve(el.duration); };
+    el.onerror = () => resolve(NaN);
+    el.src = URL.createObjectURL(file);
+  });
 }
 
 /* ================= render ================= */
@@ -365,7 +438,11 @@ async function generate() {
   const prompt = $("prompt").value.trim();
   if (!prompt) return note("Write a prompt first.", "err");
   if (state.wf === "i2v" && !state.images.length) return note("Pick a first-frame image, or switch to Text → Video.", "err");
-  if (state.wf === "r2v" && !state.images.length) return note("Reference → Video needs at least one reference image.", "err");
+  if (state.wf === "r2v") {
+    if (!refTotal()) return note("Reference → Video needs at least one reference image, video, or audio clip.", "err");
+    const problems = refProblems();
+    if (problems.length) return note(problems.join("; ") + ".", "err");
+  }
 
   setBusy(true); note("");
   const [width, height] = $("aspect").value.split("x").map(Number);
@@ -375,9 +452,17 @@ async function generate() {
   const t0 = Date.now();
 
   try {
-    const imageNames = state.wf === "t2v" ? []
-      : await Promise.all(state.images.map(uploadImage));
-    const graph = buildGraph({ prompt, width, height, length, steps: +$("steps").value, seed, imageNames, wf: state.wf });
+    let imageNames = [], videoNames = [], audioNames = [];
+    if (state.wf === "i2v") {
+      imageNames = await Promise.all(state.images.map(uploadAsset));
+    } else if (state.wf === "r2v") {
+      $("stage").innerHTML = `<div>Uploading ${refTotal()} reference file(s)…</div>`;
+      [imageNames, videoNames, audioNames] = await Promise.all(
+        ["image", "video", "audio"].map(k => Promise.all(state.refs[k].map(e => uploadAsset(e.file)))));
+    }
+    const graph = buildGraph({
+      prompt, width, height, length, steps: +$("steps").value, seed, wf: state.wf,
+      imageNames, videoNames, audioNames, useVideoAudio: $("usevidaudio").checked });
 
     const sub = await fetch(`${base()}/prompt`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -456,15 +541,12 @@ $("tabs").addEventListener("click", e => {
   const t = e.target.closest(".tab"); if (!t || t.disabled) return;
   [...$("tabs").children].forEach(b => b.setAttribute("aria-selected", b === t));
   state.wf = t.dataset.wf;
-  const needsImages = state.wf !== "t2v";
-  $("imgblock").hidden = !needsImages;
-  $("promptlbl").classList.toggle("lbl0", !needsImages);
-  $("file").multiple = state.wf === "r2v";
-  $("imglbl").innerHTML = state.wf === "r2v"
-    ? 'Reference images <span class="hint">— up to 9; they guide subject and style</span>'
-    : 'First frame <span class="hint">— the clip animates out of this image</span>';
+  $("imgblock").hidden = state.wf !== "i2v";
+  $("refblock").hidden = state.wf !== "r2v";
+  $("promptlbl").classList.toggle("lbl0", state.wf === "t2v");
   if (state.images.length > maxImages()) state.images = state.images.slice(0, maxImages());
   paintThumbs();
+  if (state.wf === "r2v") paintRefs();
 });
 
 $("drop").addEventListener("click", () => $("file").click());
@@ -476,7 +558,7 @@ $("drop").addEventListener("drop", e => {
 });
 $("file").addEventListener("change", e => { addImages(e.target.files); e.target.value = ""; });
 
-const maxImages = () => state.wf === "r2v" ? 9 : 1;
+const maxImages = () => 1;   // i2v takes a single first frame
 
 function addImages(files) {
   for (const f of files) {
@@ -506,6 +588,90 @@ function paintThumbs() {
   $("drop").textContent = n === 0
     ? "Drop an image, or click to choose"
     : max > 1 ? `${n} of ${max} images — click to add more` : state.images[0].name;
+}
+
+
+/* ---------- reference assets (r2v) ---------- */
+// Limits from the MiniMax-H3 model card, stricter than the node schema alone:
+//   images <=9 | videos <=3 (2-15s each, <=15s total) | audio <=3 (same, never alone)
+//   and <=12 files across all three.
+const REF_MAX = { image: 9, video: 3, audio: 3 };
+const REF_TOTAL_MAX = 12;
+
+document.querySelectorAll(".rdrop").forEach(z => {
+  const kind = z.dataset.kind, input = z.querySelector("input");
+  z.addEventListener("click", () => input.click());
+  z.addEventListener("dragover", e => { e.preventDefault(); z.classList.add("hot"); });
+  z.addEventListener("dragleave", () => z.classList.remove("hot"));
+  z.addEventListener("drop", e => { e.preventDefault(); z.classList.remove("hot"); addRefs(kind, e.dataTransfer.files); });
+  input.addEventListener("change", e => { addRefs(kind, e.target.files); e.target.value = ""; });
+});
+
+async function addRefs(kind, files) {
+  const bucket = state.refs[kind];
+  for (const f of files) {
+    if (!f.type.startsWith(kind + "/")) continue;
+    if (bucket.length >= REF_MAX[kind]) { note(`At most ${REF_MAX[kind]} reference ${kind}s.`, "warn"); break; }
+    if (refTotal() >= REF_TOTAL_MAX) { note(`At most ${REF_TOTAL_MAX} reference files in total.`, "warn"); break; }
+    const entry = { file: f, dur: null };
+    bucket.push(entry);
+    if (kind !== "image") entry.dur = await probeDuration(f);
+  }
+  paintRefs();
+}
+
+const refTotal = () => state.refs.image.length + state.refs.video.length + state.refs.audio.length;
+const secsTotal = kind => state.refs[kind].reduce((a, e) => a + (e.dur || 0), 0);
+
+function paintRefs() {
+  for (const kind of ["image", "video", "audio"]) {
+    const box = document.querySelector(`.rthumbs[data-kind="${kind}"]`);
+    box.innerHTML = "";
+    state.refs[kind].forEach((entry, i) => {
+      const fig = document.createElement("figure");
+      let el;
+      if (kind === "image") { el = document.createElement("img"); el.src = URL.createObjectURL(entry.file); }
+      else if (kind === "video") { el = document.createElement("video"); el.src = URL.createObjectURL(entry.file); el.muted = true; }
+      else { el = document.createElement("div"); el.className = "chipfile";
+             const t = document.createElement("span"); t.textContent = entry.file.name; el.append("♪", t); }
+      el.title = entry.file.name;
+      const x = document.createElement("button");
+      x.textContent = "×"; x.title = "Remove";
+      x.onclick = () => { state.refs[kind].splice(i, 1); paintRefs(); };
+      fig.append(el, x);
+      if (kind !== "image") {
+        const cap = document.createElement("figcaption");
+        const d = entry.dur;
+        cap.textContent = Number.isFinite(d) ? d.toFixed(1) + "s" : "?";
+        if (Number.isFinite(d) && (d < 2 || d > 15)) cap.className = "bad";
+        fig.appendChild(cap);
+      }
+      box.appendChild(fig);
+    });
+    const z = document.querySelector(`.rdrop[data-kind="${kind}"]`);
+    const n = state.refs[kind].length;
+    z.firstChild.nodeValue = n ? `${n} of ${REF_MAX[kind]} — click to add more ` : `Drop ${kind}s, or click `;
+  }
+  const problems = refProblems();
+  $("refcount").innerHTML = `${refTotal()} of ${REF_TOTAL_MAX} files`
+    + (state.refs.video.length ? ` · video ${secsTotal("video").toFixed(1)}s` : "")
+    + (state.refs.audio.length ? ` · audio ${secsTotal("audio").toFixed(1)}s` : "")
+    + (problems.length ? ` — <span class="bad">${problems[0]}</span>` : "");
+}
+
+// Returns human-readable rule violations, empty when the set is renderable.
+function refProblems() {
+  const p = [];
+  for (const kind of ["video", "audio"]) {
+    for (const e of state.refs[kind])
+      if (Number.isFinite(e.dur) && (e.dur < 2 || e.dur > 15))
+        p.push(`${e.file.name} is ${e.dur.toFixed(1)}s; clips must be 2-15s`);
+    if (secsTotal(kind) > 15.01) p.push(`total ${kind} duration exceeds 15s`);
+  }
+  if (state.refs.audio.length && !state.refs.image.length && !state.refs.video.length)
+    p.push("audio cannot be the only reference — add an image or a video");
+  if (refTotal() > REF_TOTAL_MAX) p.push(`more than ${REF_TOTAL_MAX} reference files`);
+  return p;
 }
 
 $("connect").addEventListener("click", () => connect());
